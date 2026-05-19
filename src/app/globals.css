@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-sans: 'DM Sans', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: #0A0C0F;
+  color: #E8EDF2;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #111418;
+}
+::-webkit-scrollbar-thumb {
+  background: #2A3340;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #00FF94;
+}
+
+/* Focus ring */
+:focus-visible {
+  outline: 2px solid #00FF94;
+  outline-offset: 2px;
+}
+
+/* Scan line effect on radar green elements */
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+
+.radar-glow {
+  box-shadow: 0 0 20px rgba(0, 255, 148, 0.15);
+}
+
+.radar-text-glow {
+  text-shadow: 0 0 20px rgba(0, 255, 148, 0.4);
+}
+
+/* Dot grid background */
+.dot-grid {
+  background-image: radial-gradient(circle, #1E242C 1px, transparent 1px);
+  background-size: 24px 24px;
+}
