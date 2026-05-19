@@ -13,13 +13,14 @@ export async function createClient() {
         getAll() {
           return cookieStore.getAll()
         },
-        setAll(cookiesToSet: { name: string; value: string; options?: Record<string, unknown> }[]) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        setAll(cookiesToSet: { name: string; value: string; options?: any }[]) {
           try {
             cookiesToSet.forEach(({ name, value, options }) =>
-              cookieStore.set(name, value, options as Parameters<typeof cookieStore.set>[2])
+              cookieStore.set(name, value, options)
             )
           } catch {
-            // Server component context — cookies set in middleware
+            // Called from a Server Component — safe to ignore
           }
         },
       },
@@ -27,7 +28,6 @@ export async function createClient() {
   )
 }
 
-// Service role client for cron/edge functions (bypasses RLS)
 export function createServiceClient() {
   return createSupabaseClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
