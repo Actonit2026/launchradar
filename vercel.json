@@ -1,12 +1,12 @@
 {
   "framework": "nextjs",
   "buildCommand": "next build",
-  "outputDirectory": ".next", 
+  "outputDirectory": ".next",
   "installCommand": "npm install",
   "crons": [
     {
       "path": "/api/scan",
-      "schedule": "0 */12 * * *"
+      "schedule": "0 8 * * *"
     }
   ],
   "functions": {
