@@ -57,7 +57,7 @@ export async function sendAlertEmail({ toEmail, competitorName, changes }: Alert
 </body>
 </html>`
 
-  const { data, error } = await getResend().emails.send.({
+  const { data, error } = await getResend().emails.send ({
     from: FROM_EMAIL,
     to: toEmail,
     subject: `◎ ${competitorName} changed their ${changes[0]?.page_type ?? 'page'}`,
