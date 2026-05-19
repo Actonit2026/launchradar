@@ -2,75 +2,65 @@ import * as cheerio from 'cheerio'
 
 const FETCH_TIMEOUT_MS = 10_000
 
-// Elements to strip before extracting text
 const NOISE_SELECTORS = [
   'script', 'style', 'noscript', 'svg', 'iframe', 'img',
-  'nav', 'footer', 'header',
+  'nav', 'footer',
   '[class*="cookie"]', '[id*="cookie"]',
   '[class*="banner"]', '[class*="popup"]',
-  '[class*="modal"]',  '[class*="sidebar"]',
-  '[class*="newsletter"]', '[class*="subscribe"]',
+  '[class*="modal"]', '[class*="newsletter"]',
   '[aria-hidden="true"]',
-  'time', '[class*="timestamp"]', '[class*="date"]',
 ].join(', ')
 
 export interface ScrapeResult {
   text: string
+  html: string
+  title: string
+  metaDescription: string | null
   ok: boolean
   error?: string
 }
 
-export async function scrapePage(url: string): Promise<ScrapeResult> {
+export async function fetchHtml(url: string): Promise<{ html: string; ok: boolean; error?: string }> {
   try {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
-
     const response = await fetch(url, {
       signal: controller.signal,
       headers: {
-        'User-Agent':
-          'Mozilla/5.0 (compatible; LaunchRadar/1.0; +https://launchradar.app)',
+        'User-Agent': 'Mozilla/5.0 (compatible; LaunchRadar/1.0; +https://launchradar.app)',
         'Accept': 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.9',
       },
       redirect: 'follow',
     })
-
     clearTimeout(timer)
-
-    if (!response.ok) {
-      return { text: '', ok: false, error: `HTTP ${response.status}` }
-    }
-
+    if (!response.ok) return { html: '', ok: false, error: `HTTP ${response.status}` }
     const html = await response.text()
-    const text = extractText(html)
-
-    return { text, ok: true }
+    return { html, ok: true }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Unknown error'
-    const isTimeout = msg.includes('abort') || msg.includes('timeout')
-    return { text: '', ok: false, error: isTimeout ? 'Timeout' : msg }
+    return { html: '', ok: false, error: msg.includes('abort') ? 'Timeout' : msg }
   }
 }
 
-function extractText(html: string): string {
-  const $ = cheerio.load(html)
+export async function scrapePage(url: string): Promise<ScrapeResult> {
+  const { html, ok, error } = await fetchHtml(url)
+  if (!ok || !html) return { text: '', html: '', title: '', metaDescription: null, ok: false, error }
 
-  // Remove noise
+  const $ = cheerio.load(html)
+  const title = $('title').text().trim()
+  const metaDescription = $('meta[name="description"]').attr('content')?.trim() ?? null
+
   $(NOISE_SELECTORS).remove()
 
-  // Focus on meaningful content sections
   const contentSelectors = [
     'main', 'article', '[role="main"]',
     'h1, h2, h3, h4',
     '[class*="price"]', '[class*="pricing"]', '[class*="plan"]',
-    '[class*="feature"]',
-    '[class*="hero"]', '[class*="headline"]',
+    '[class*="feature"]', '[class*="hero"]',
     'button', '[class*="cta"]',
-    '[class*="benefit"]', '[class*="value"]',
   ]
 
-  // Try to get targeted content first
   const targeted: string[] = []
   contentSelectors.forEach(sel => {
     $(sel).each((_, el) => {
@@ -79,20 +69,8 @@ function extractText(html: string): string {
     })
   })
 
-  // Fall back to full body text if targeted is too sparse
-  const fullText = $('body').text()
-  const raw = targeted.length > 50
-    ? targeted.join(' ')
-    : fullText
+  const raw = targeted.length > 50 ? targeted.join(' ') : $('body').text()
+  const text = raw.replace(/\s+/g, ' ').replace(/\n+/g, ' ').trim().toLowerCase().substring(0, 50_000)
 
-  return normalizeText(raw)
-}
-
-function normalizeText(raw: string): string {
-  return raw
-    .replace(/\s+/g, ' ')       // collapse whitespace
-    .replace(/\n+/g, ' ')       // remove newlines
-    .trim()
-    .toLowerCase()
-    .substring(0, 50_000)       // cap at 50k chars
+  return { text, html, title, metaDescription, ok: true }
 }
