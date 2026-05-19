@@ -1,191 +1,265 @@
 import * as cheerio from 'cheerio'
-import { fetchHtml } from './scraper'
 
-export type DiscoveredPageType = 'homepage' | 'pricing' | 'features' | 'changelog'
+export type Confidence = 'high' | 'medium' | 'low' | 'unavailable'
 
-export interface PageCandidate {
-  url: string
-  page_type: DiscoveredPageType
-  score: number
-  source_method: 'homepage' | 'homepage_link' | 'sitemap' | 'fallback'
-  anchor_text?: string
+export interface PricingCandidate {
+  amount: number
+  currency: string
+  billing_period: string | null
+  raw_text: string
+  surrounding_context: string
+  confidence: number
+  source_url: string
 }
 
-const SIGNALS: Record<Exclude<DiscoveredPageType, 'homepage'>, { url: string[]; anchor: string[] }> = {
-  pricing: {
-    url: ['pric', 'plan', 'package', 'subscri', 'billing', 'buy', 'upgrade', 'cost'],
-    anchor: ['pricing', 'plans', 'packages', 'subscribe', 'billing', 'upgrade', 'cost', 'buy now', 'get started', 'try free'],
-  },
-  features: {
-    url: ['feature', 'product', 'solution', 'platform', 'capability', 'use-case', 'how-it-works'],
-    anchor: ['features', 'product', 'solutions', 'platform', 'capabilities', 'how it works'],
-  },
-  changelog: {
-    url: ['changelog', 'update', 'release', 'news', 'blog', 'whats-new', 'roadmap'],
-    anchor: ['changelog', 'updates', 'releases', "what's new", 'blog', 'news', 'latest', 'release notes'],
-  },
+export interface ExtractedPositioning {
+  homepage_headline: string | null
+  subheadline: string | null
+  target_customer: string | null
+  main_value_prop: string | null
+  primary_cta: string | null
+  secondary_cta: string | null
+  confidence: Confidence
+  source_url: string
+  evidence_text: string | null
 }
 
-const FALLBACK_PATHS: Record<Exclude<DiscoveredPageType, 'homepage'>, string[]> = {
-  pricing: ['/pricing', '/plans', '/packages', '/subscribe', '/billing'],
-  features: ['/features', '/product', '/solutions', '/platform'],
-  changelog: ['/changelog', '/updates', '/releases', '/blog', '/release-notes', '/whats-new'],
+export interface ExtractedFeature {
+  name: string
+  description: string | null
+  source_url: string
+  evidence_text: string
+  confidence: number
 }
 
-function scoreLink(url: string, anchorText: string, type: Exclude<DiscoveredPageType, 'homepage'>): number {
-  const urlL = url.toLowerCase()
-  const anchorL = anchorText.toLowerCase()
-  let score = 0
-  for (const kw of SIGNALS[type].url) { if (urlL.includes(kw)) score += 3 }
-  for (const kw of SIGNALS[type].anchor) { if (anchorL.includes(kw)) score += 2 }
-  return score
+export interface ExtractedChangelog {
+  detected: boolean
+  changelog_url: string | null
+  last_visible_update_date: string | null
+  confidence: Confidence
+  evidence_text: string | null
 }
 
-function normalizeHref(href: string, baseUrl: string): string | null {
-  try {
-    if (!href) return null
-    if (href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('#')) return null
-    if (href.startsWith('javascript:')) return null
-    const base = new URL(baseUrl)
-    if (href.startsWith('//')) return `${base.protocol}${href}`
-    if (href.startsWith('/')) return `${base.protocol}//${base.host}${href}`
-    if (href.startsWith('http')) {
-      const target = new URL(href)
-      if (target.host !== base.host) return null
-      return href
-    }
-    return null
-  } catch { return null }
+export interface PageExtraction {
+  page_type: string
+  source_url: string
+  pricing_candidates: PricingCandidate[]
+  positioning: ExtractedPositioning | null
+  features: ExtractedFeature[]
+  changelog: ExtractedChangelog
 }
 
-function isHomepage(url: string, baseUrl: string): boolean {
-  try {
-    const base = new URL(baseUrl)
-    const target = new URL(url)
-    return target.pathname === '/' || target.pathname === ''
-  } catch { return false }
+const PRICE_RE = /(?:(?:from|starting(?:\s+at)?|just|only|as\s+low\s+as)\s+)?(?<sym>[$€£])\s*(?<amount>\d{1,5}(?:[.,]\d{1,3})?(?:[.,]\d{1,2})?)\s*(?:\/\s*(?<period>mo(?:nth)?|yr|year|user|seat|month|annual(?:ly)?))?/gi
+const CODE_RE = /\b(?<amount>\d{1,5}(?:\.\d{1,2})?)\s*(?<code>USD|EUR|GBP)\b/gi
+const PRICING_CTX_RE = /\b(?:month(?:ly)?|mo\b|year(?:ly)?|annual(?:ly)?|per\s+(?:month|year|user|seat|mo)|\/mo|\/yr|\/month|plan|plans|pric(?:e|ing)|subscri(?:be|ption)|billing|billed|upgrade|free\s+trial|starter|pro|enterprise)\b/i
+
+function parseAmount(str: string): number {
+  const s = str.replace(/[.,](?=\d{3}\b)/g, '').replace(',', '.')
+  return parseFloat(s) || 0
 }
 
-function discoverFromHomepageLinks(
-  html: string,
-  baseUrl: string
-): Map<Exclude<DiscoveredPageType, 'homepage'>, PageCandidate[]> {
+function getContext(text: string, index: number, radius = 250): string {
+  const start = Math.max(0, index - radius)
+  const end = Math.min(text.length, index + radius)
+  return text.slice(start, end).replace(/\s+/g, ' ').trim()
+}
+
+function currencySymToCode(sym: string): string {
+  return sym === '$' ? 'USD' : sym === '€' ? 'EUR' : sym === '£' ? 'GBP' : sym
+}
+
+export function extractPricingCandidates(html: string, url: string): PricingCandidate[] {
   const $ = cheerio.load(html)
-  const results = new Map<Exclude<DiscoveredPageType, 'homepage'>, PageCandidate[]>()
-  const types: Exclude<DiscoveredPageType, 'homepage'>[] = ['pricing', 'features', 'changelog']
-
-  $('a[href]').each((_, el) => {
-    const href = $(el).attr('href') ?? ''
-    const anchorText = $(el).text().trim()
-    const url = normalizeHref(href, baseUrl)
-    if (!url || isHomepage(url, baseUrl)) return
-
-    for (const type of types) {
-      const score = scoreLink(url, anchorText, type)
-      if (score > 0) {
-        const list = results.get(type) ?? []
-        if (!list.find(c => c.url === url)) {
-          list.push({ url, page_type: type, score, source_method: 'homepage_link', anchor_text: anchorText })
-        }
-        results.set(type, list)
-      }
-    }
-  })
-
-  return results
-}
-
-async function discoverFromSitemap(baseUrl: string): Promise<PageCandidate[]> {
-  const candidates: PageCandidate[] = []
-  const types: Exclude<DiscoveredPageType, 'homepage'>[] = ['pricing', 'features', 'changelog']
-
-  for (const sitemapPath of ['/sitemap.xml', '/sitemap_index.xml']) {
-    try {
-      const { html: xml, ok } = await fetchHtml(`${baseUrl}${sitemapPath}`)
-      if (!ok || !xml || !xml.includes('<loc>')) continue
-
-      const locMatches = [...xml.matchAll(/<loc>([^<]+)<\/loc>/gi)]
-      for (const match of locMatches) {
-        const url = match[1]?.trim()
-        if (!url) continue
-        try {
-          const base = new URL(baseUrl)
-          const target = new URL(url)
-          if (target.host !== base.host) continue
-        } catch { continue }
-
-        for (const type of types) {
-          const score = scoreLink(url, '', type)
-          if (score >= 3) {
-            candidates.push({ url, page_type: type, score: score - 1, source_method: 'sitemap' })
-          }
-        }
-      }
-      if (candidates.length > 0) break
-    } catch { continue }
-  }
-
-  return candidates
-}
-
-async function tryFallbackPaths(
-  baseUrl: string,
-  missingTypes: Exclude<DiscoveredPageType, 'homepage'>[]
-): Promise<PageCandidate[]> {
-  const candidates: PageCandidate[] = []
-  for (const type of missingTypes) {
-    for (const path of FALLBACK_PATHS[type]) {
-      const url = `${baseUrl}${path}`
-      const { ok } = await fetchHtml(url)
-      if (ok) {
-        candidates.push({ url, page_type: type, score: 2, source_method: 'fallback' })
-        break
-      }
-    }
-  }
-  return candidates
-}
-
-export async function discoverPages(baseUrl: string, homepageHtml: string): Promise<PageCandidate[]> {
-  const result: PageCandidate[] = [
-    { url: baseUrl, page_type: 'homepage', score: 10, source_method: 'homepage' },
+  const pricingSections: string[] = []
+  const sectionSelectors = [
+    '[class*="pric"]', '[class*="plan"]', '[class*="tier"]', '[class*="package"]',
+    '[id*="pric"]', '[id*="plan"]', 'main', 'article', 'section',
   ]
-
-  const types: Exclude<DiscoveredPageType, 'homepage'>[] = ['pricing', 'features', 'changelog']
-  const homepageCandidates = discoverFromHomepageLinks(homepageHtml, baseUrl)
-  const sitemapCandidates = await discoverFromSitemap(baseUrl)
-
-  const allByType = new Map<Exclude<DiscoveredPageType, 'homepage'>, PageCandidate[]>()
-  for (const type of types) { allByType.set(type, []) }
-
-  for (const [type, candidates] of homepageCandidates) {
-    allByType.set(type, [...(allByType.get(type) ?? []), ...candidates])
-  }
-  for (const candidate of sitemapCandidates) {
-    const type = candidate.page_type as Exclude<DiscoveredPageType, 'homepage'>
-    const list = allByType.get(type) ?? []
-    if (!list.find(c => c.url === candidate.url)) list.push(candidate)
-    allByType.set(type, list)
+  for (const sel of sectionSelectors) {
+    $(sel).each((_, el) => {
+      const t = $(el).text()
+      if (t.length > 20) pricingSections.push(t)
+    })
   }
 
-  const missingTypes = types.filter(t => (allByType.get(t)?.length ?? 0) === 0)
-  if (missingTypes.length > 0) {
-    const fallbacks = await tryFallbackPaths(baseUrl, missingTypes)
-    for (const candidate of fallbacks) {
-      const type = candidate.page_type as Exclude<DiscoveredPageType, 'homepage'>
-      allByType.set(type, [candidate])
+  const fullText = (pricingSections.join('\n') || $('body').text()).replace(/\s+/g, ' ')
+  const candidates: PricingCandidate[] = []
+  const seen = new Set<string>()
+
+  PRICE_RE.lastIndex = 0
+  for (const m of fullText.matchAll(PRICE_RE)) {
+    const sym = m.groups?.sym ?? ''
+    const amountStr = m.groups?.amount ?? ''
+    const period = m.groups?.period ?? null
+    const amount = parseAmount(amountStr)
+    if (amount <= 0 || amount > 50_000) continue
+    const context = getContext(fullText, m.index ?? 0)
+    const hasPricingCtx = PRICING_CTX_RE.test(context)
+    if (!period && !hasPricingCtx) continue
+    const key = `${sym}${amount}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    let confidence = 0.4
+    if (period) confidence += 0.3
+    if (hasPricingCtx) confidence += 0.2
+    if (/pric|plan|package|subscri/i.test(url)) confidence += 0.1
+    confidence = Math.min(1, confidence)
+    candidates.push({ amount, currency: currencySymToCode(sym), billing_period: period ?? null, raw_text: m[0].trim(), surrounding_context: context, confidence, source_url: url })
+  }
+
+  CODE_RE.lastIndex = 0
+  for (const m of fullText.matchAll(CODE_RE)) {
+    const amount = parseAmount(m.groups?.amount ?? '')
+    const code = m.groups?.code ?? ''
+    if (amount <= 0 || amount > 50_000) continue
+    const context = getContext(fullText, m.index ?? 0)
+    if (!PRICING_CTX_RE.test(context)) continue
+    const key = `${code}${amount}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    candidates.push({ amount, currency: code, billing_period: null, raw_text: m[0].trim(), surrounding_context: context, confidence: 0.55, source_url: url })
+  }
+
+  return candidates.sort((a, b) => b.confidence - a.confidence).slice(0, 10)
+}
+
+export function selectBestPricing(candidates: PricingCandidate[]): {
+  detected_pricing: string | null
+  pricing_confidence: Confidence
+  pricing_model_hint: string | null
+  evidence: PricingCandidate | null
+} {
+  if (candidates.length === 0) {
+    return { detected_pricing: null, pricing_confidence: 'unavailable', pricing_model_hint: null, evidence: null }
+  }
+  const highConf = candidates.filter(c => c.confidence >= 0.65)
+  const pool = highConf.length > 0 ? highConf : candidates
+  const sym: Record<string, string> = { USD: '$', EUR: '€', GBP: '£' }
+  const sorted = [...pool].sort((a, b) => a.amount - b.amount)
+  const lowest = sorted[0]
+  const highest = sorted[sorted.length - 1]
+  const s = sym[lowest.currency] ?? lowest.currency
+  const period = lowest.billing_period ? `/${lowest.billing_period}` : ''
+  let displayValue: string
+  if (lowest.amount !== highest.amount && pool.length > 1) {
+    const s2 = sym[highest.currency] ?? highest.currency
+    displayValue = `${s}${lowest.amount}–${s2}${highest.amount}${period}`
+  } else {
+    displayValue = `${s}${lowest.amount}${period}`
+  }
+  const maxConf = Math.max(...candidates.map(c => c.confidence))
+  const confidence: Confidence = maxConf >= 0.8 ? 'high' : maxConf >= 0.55 ? 'medium' : 'low'
+  const allContext = candidates.map(c => c.surrounding_context).join(' ')
+  let pricing_model_hint: string | null = null
+  if (/\bfree\s+(?:plan|forever|tier)\b/i.test(allContext)) pricing_model_hint = 'freemium'
+  else if (candidates.length > 0) pricing_model_hint = 'paid'
+  return { detected_pricing: displayValue, pricing_confidence: confidence, pricing_model_hint, evidence: lowest }
+}
+
+export function extractPositioning(html: string, url: string): ExtractedPositioning {
+  const $ = cheerio.load(html)
+  const title = $('title').first().text().trim()
+  const metaDesc = $('meta[name="description"]').attr('content')?.trim() ?? null
+  const ogDesc = $('meta[property="og:description"]').attr('content')?.trim() ?? null
+  const h1 = $('h1').first().text().trim() || null
+  let subheadline: string | null = null
+  const subSelectors = ['[class*="hero"] h2', '[class*="hero"] p', 'header h2', 'section:first-of-type h2', 'h2']
+  for (const sel of subSelectors) {
+    const text = $(sel).first().text().trim()
+    if (text && text.length > 10 && text.length < 250 && text !== h1) { subheadline = text; break }
+  }
+  const ctaTexts: string[] = []
+  const ctaSelectors = ['[class*="hero"] a', '[class*="cta"] a', 'header a[class*="btn"]', 'a[class*="primary"]', 'a[class*="cta"]', '.hero a', 'header a', '[class*="hero"] button', '[class*="cta"] button']
+  for (const sel of ctaSelectors) {
+    $(sel).each((_, el) => {
+      const text = $(el).text().trim()
+      if (text && text.length > 2 && text.length < 60 && !ctaTexts.includes(text)) ctaTexts.push(text)
+    })
+    if (ctaTexts.length >= 2) break
+  }
+  const headline = h1 ?? title ?? null
+  const isGenericTitle = !headline || headline.length < 5
+  const hasGoodData = !isGenericTitle && (!!metaDesc || !!subheadline)
+  let confidence: Confidence
+  if (hasGoodData && h1) confidence = 'high'
+  else if (h1 || metaDesc) confidence = 'medium'
+  else if (title) confidence = 'low'
+  else confidence = 'unavailable'
+  return {
+    homepage_headline: isGenericTitle ? null : headline,
+    subheadline,
+    target_customer: null,
+    main_value_prop: metaDesc ?? ogDesc ?? null,
+    primary_cta: ctaTexts[0] ?? null,
+    secondary_cta: ctaTexts[1] ?? null,
+    confidence,
+    source_url: url,
+    evidence_text: [headline, subheadline].filter(Boolean).slice(0, 2).join(' · ') || null,
+  }
+}
+
+export function extractFeatures(html: string, url: string): ExtractedFeature[] {
+  const $ = cheerio.load(html)
+  const features: ExtractedFeature[] = []
+  const seen = new Set<string>()
+  const cardSelectors = ['[class*="feature"]', '[class*="benefit"]', '[class*="capability"]', '[class*="card"]', '[class*="item"]', '[class*="module"]']
+  for (const sel of cardSelectors) {
+    const els = $(sel)
+    if (els.length >= 3 && els.length <= 30) {
+      els.each((_, el) => {
+        const heading = $(el).find('h2, h3, h4, strong, b').first().text().trim()
+        const desc = $(el).find('p').first().text().trim()
+        if (!heading || heading.length < 3 || heading.length > 100) return
+        if (seen.has(heading.toLowerCase())) return
+        seen.add(heading.toLowerCase())
+        features.push({ name: heading, description: desc.length > 10 ? desc.substring(0, 200) : null, source_url: url, evidence_text: heading, confidence: els.length >= 5 ? 0.8 : 0.65 })
+      })
+      if (features.length >= 4) break
     }
   }
-
-  for (const type of types) {
-    const candidates = allByType.get(type) ?? []
-    if (candidates.length === 0) continue
-    candidates.sort((a, b) => b.score - a.score)
-    const best = candidates[0]
-    if (best.score >= 2 || best.source_method === 'fallback') {
-      result.push(best)
-    }
+  if (features.length < 3) {
+    $('h3, h4').each((_, el) => {
+      const name = $(el).text().trim()
+      if (!name || name.length < 3 || name.length > 80) return
+      if (seen.has(name.toLowerCase())) return
+      seen.add(name.toLowerCase())
+      const desc = $(el).next('p').text().trim()
+      features.push({ name, description: desc.length > 10 ? desc.substring(0, 200) : null, source_url: url, evidence_text: name, confidence: 0.5 })
+    })
   }
+  return features.filter(f => f.confidence >= 0.5).slice(0, 12)
+}
 
-  return result
+const DATE_RE = /\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},?\s+\d{4}|\d{4}-\d{2}-\d{2}/gi
+const RELEASE_RE = /\b(?:released?|shipped|launched|version|v\d+\.\d|bug\s+fix|new\s+feature|update[d]?|improved?)\b/gi
+
+export function extractChangelog(html: string, url: string): ExtractedChangelog {
+  const $ = cheerio.load(html)
+  const text = $('body').text()
+  const title = $('title').text()
+  const dates = [...text.matchAll(DATE_RE)].map(m => m[0]).slice(0, 5)
+  const releaseWordCount = [...text.matchAll(RELEASE_RE)].length
+  const urlSignal = /changelog|update|release|blog|news/i.test(url)
+  const titleSignal = /changelog|update|release|news/i.test(title)
+  const detected = urlSignal || titleSignal || (dates.length >= 2 && releaseWordCount >= 3)
+  let confidence: Confidence = 'unavailable'
+  if (detected) confidence = (urlSignal || titleSignal) && dates.length >= 1 ? 'high' : 'medium'
+  return {
+    detected,
+    changelog_url: detected ? url : null,
+    last_visible_update_date: dates[0] ?? null,
+    confidence,
+    evidence_text: dates.length > 0 ? `Dates found: ${dates.slice(0, 3).join(', ')}` : releaseWordCount > 0 ? `${releaseWordCount} release keywords found` : null,
+  }
+}
+
+export function extractFromPage(html: string, url: string, page_type: string): PageExtraction {
+  return {
+    page_type,
+    source_url: url,
+    pricing_candidates: (page_type === 'pricing' || page_type === 'homepage') ? extractPricingCandidates(html, url) : [],
+    positioning: page_type === 'homepage' ? extractPositioning(html, url) : null,
+    features: (page_type === 'features' || page_type === 'homepage') ? extractFeatures(html, url) : [],
+    changelog: page_type === 'changelog' ? extractChangelog(html, url) : { detected: false, changelog_url: null, last_visible_update_date: null, confidence: 'unavailable', evidence_text: null },
+  }
 }
