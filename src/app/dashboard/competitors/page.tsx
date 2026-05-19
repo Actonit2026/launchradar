@@ -6,11 +6,11 @@ export default async function CompetitorsPage() {
 
   const { data: competitors, error } = await supabase
     .from('competitors')
-    .select(`
-      *,
-      monitored_pages(id, page_type, last_checked_at)
-    `)
+    .select(`*, monitored_pages(id, page_type, last_checked_at)`)
     .order('created_at', { ascending: false })
+
+  const count = competitors?.length ?? 0
+  const atLimit = count >= 2
 
   return (
     <div className="animate-fade-in pt-14 md:pt-0">
@@ -18,15 +18,21 @@ export default async function CompetitorsPage() {
         <div>
           <h1 className="text-2xl font-bold text-radar-text">Competitors</h1>
           <p className="text-radar-text-muted text-sm mt-1">
-            {competitors?.length ?? 0} tracked
+            <span className="font-mono text-radar-accent">{count}</span>/2 on free plan
           </p>
         </div>
-        <Link
-          href="/dashboard/competitors/new"
-          className="bg-radar-accent text-radar-bg font-semibold px-4 py-2 rounded-lg hover:bg-radar-accent-dim transition-colors text-sm"
-        >
-          + Add competitor
-        </Link>
+        {atLimit ? (
+          <span className="text-xs text-radar-text-muted border border-radar-border rounded-lg px-3 py-2">
+            Limit reached
+          </span>
+        ) : (
+          <Link
+            href="/dashboard/competitors/new"
+            className="bg-radar-accent text-radar-bg font-semibold px-4 py-2 rounded-lg hover:bg-radar-accent-dim transition-colors text-sm"
+          >
+            + Add competitor
+          </Link>
+        )}
       </div>
 
       {error && (
@@ -38,12 +44,9 @@ export default async function CompetitorsPage() {
       {!competitors || competitors.length === 0 ? (
         <div className="border border-dashed border-radar-border rounded-xl p-12 text-center">
           <div className="text-4xl mb-4 text-radar-text-muted">⊞</div>
-          <h2 className="text-lg font-semibold text-radar-text mb-2">
-            No competitors yet
-          </h2>
+          <h2 className="text-lg font-semibold text-radar-text mb-2">No competitors yet</h2>
           <p className="text-radar-text-muted text-sm mb-6 max-w-sm mx-auto">
-            Add a competitor URL and we&apos;ll discover their key pages and
-            start monitoring them automatically.
+            Add a competitor URL and we&apos;ll discover their key pages and start monitoring.
           </p>
           <Link
             href="/dashboard/competitors/new"
@@ -54,22 +57,20 @@ export default async function CompetitorsPage() {
         </div>
       ) : (
         <div className="space-y-3">
-          {competitors.map(c => (
-            <div
+          {competitors.map((c: any) => (
+            <Link
               key={c.id}
-              className="border border-radar-border bg-radar-surface rounded-lg p-5 hover:border-radar-accent/30 transition-colors"
+              href={`/dashboard/competitors/${c.id}`}
+              className="block border border-radar-border bg-radar-surface rounded-lg p-5 hover:border-radar-accent/30 transition-colors group"
             >
               <div className="flex items-start justify-between gap-4">
                 <div className="flex-1 min-w-0">
-                  <h3 className="font-semibold text-radar-text">{c.name}</h3>
-                  <a
-                    href={c.base_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-radar-text-muted text-sm font-mono hover:text-radar-accent transition-colors"
-                  >
+                  <h3 className="font-semibold text-radar-text group-hover:text-radar-accent transition-colors">
+                    {c.name}
+                  </h3>
+                  <p className="text-radar-text-muted text-sm font-mono mt-0.5">
                     {c.base_url}
-                  </a>
+                  </p>
                   <div className="flex flex-wrap gap-1.5 mt-3">
                     {c.monitored_pages?.map((p: any) => (
                       <span
@@ -79,23 +80,13 @@ export default async function CompetitorsPage() {
                         {p.page_type}
                       </span>
                     ))}
-                    {(!c.monitored_pages || c.monitored_pages.length === 0) && (
-                      <span className="text-xs text-radar-text-muted">
-                        No pages monitored yet
-                      </span>
-                    )}
                   </div>
                 </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <Link
-                    href={`/dashboard/competitors/${c.id}`}
-                    className="text-xs text-radar-text-muted hover:text-radar-accent transition-colors px-3 py-1.5 border border-radar-border rounded hover:border-radar-accent/30"
-                  >
-                    View →
-                  </Link>
-                </div>
+                <span className="text-radar-text-muted group-hover:text-radar-accent text-sm transition-colors flex-shrink-0">
+                  →
+                </span>
               </div>
-            </div>
+            </Link>
           ))}
         </div>
       )}
