@@ -1,191 +1,151 @@
-import * as cheerio from 'cheerio'
-import { fetchHtml } from './scraper'
+const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages'
 
-export type DiscoveredPageType = 'homepage' | 'pricing' | 'features' | 'changelog'
-
-export interface PageCandidate {
-  url: string
-  page_type: DiscoveredPageType
-  score: number
-  source_method: 'homepage' | 'homepage_link' | 'sitemap' | 'fallback'
-  anchor_text?: string
+interface SummaryInput {
+  competitorName: string
+  pageType: string
+  pageUrl: string
+  oldText: string
+  newText: string
 }
 
-const SIGNALS: Record<Exclude<DiscoveredPageType, 'homepage'>, { url: string[]; anchor: string[] }> = {
-  pricing: {
-    url: ['pric', 'plan', 'package', 'subscri', 'billing', 'buy', 'upgrade', 'cost'],
-    anchor: ['pricing', 'plans', 'packages', 'subscribe', 'billing', 'upgrade', 'cost', 'buy now', 'get started', 'try free'],
-  },
-  features: {
-    url: ['feature', 'product', 'solution', 'platform', 'capability', 'use-case', 'how-it-works'],
-    anchor: ['features', 'product', 'solutions', 'platform', 'capabilities', 'how it works'],
-  },
-  changelog: {
-    url: ['changelog', 'update', 'release', 'news', 'blog', 'whats-new', 'roadmap'],
-    anchor: ['changelog', 'updates', 'releases', "what's new", 'blog', 'news', 'latest', 'release notes'],
-  },
+interface SummaryOutput {
+  summary: string
+  severity: 'low' | 'medium' | 'high'
+  why_it_matters: string
 }
 
-const FALLBACK_PATHS: Record<Exclude<DiscoveredPageType, 'homepage'>, string[]> = {
-  pricing: ['/pricing', '/plans', '/packages', '/subscribe', '/billing'],
-  features: ['/features', '/product', '/solutions', '/platform'],
-  changelog: ['/changelog', '/updates', '/releases', '/blog', '/release-notes', '/whats-new'],
-}
+export async function generateAISummary(input: SummaryInput): Promise<SummaryOutput | null> {
+  if (!process.env.ANTHROPIC_API_KEY) return null
+  const prompt = `You are a competitive intelligence analyst. A SaaS competitor's website page changed.
 
-function scoreLink(url: string, anchorText: string, type: Exclude<DiscoveredPageType, 'homepage'>): number {
-  const urlL = url.toLowerCase()
-  const anchorL = anchorText.toLowerCase()
-  let score = 0
-  for (const kw of SIGNALS[type].url) { if (urlL.includes(kw)) score += 3 }
-  for (const kw of SIGNALS[type].anchor) { if (anchorL.includes(kw)) score += 2 }
-  return score
-}
+Competitor: ${input.competitorName}
+Page: ${input.pageType} (${input.pageUrl})
 
-function normalizeHref(href: string, baseUrl: string): string | null {
+BEFORE: ${input.oldText.substring(0, 2000)}
+AFTER: ${input.newText.substring(0, 2000)}
+
+Respond ONLY with a JSON object, no markdown:
+{"summary":"One sentence describing what changed","severity":"low|medium|high","why_it_matters":"One sentence on strategic importance"}
+
+high=pricing/major features, medium=new features/messaging, low=minor copy`
+
   try {
-    if (!href) return null
-    if (href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('#')) return null
-    if (href.startsWith('javascript:')) return null
-    const base = new URL(baseUrl)
-    if (href.startsWith('//')) return `${base.protocol}${href}`
-    if (href.startsWith('/')) return `${base.protocol}//${base.host}${href}`
-    if (href.startsWith('http')) {
-      const target = new URL(href)
-      if (target.host !== base.host) return null
-      return href
-    }
-    return null
+    const response = await fetch(ANTHROPIC_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 256, messages: [{ role: 'user', content: prompt }] }),
+    })
+    if (!response.ok) return null
+    const data = await response.json()
+    const parsed = JSON.parse(data.content?.[0]?.text ?? '') as SummaryOutput
+    if (!parsed.summary || !['low', 'medium', 'high'].includes(parsed.severity)) return null
+    return parsed
   } catch { return null }
 }
 
-function isHomepage(url: string, baseUrl: string): boolean {
-  try {
-    const base = new URL(baseUrl)
-    const target = new URL(url)
-    return target.pathname === '/' || target.pathname === ''
-  } catch { return false }
-}
-
-function discoverFromHomepageLinks(
-  html: string,
+export interface StructuredIntelligence {
+  competitorName: string
   baseUrl: string
-): Map<Exclude<DiscoveredPageType, 'homepage'>, PageCandidate[]> {
-  const $ = cheerio.load(html)
-  const results = new Map<Exclude<DiscoveredPageType, 'homepage'>, PageCandidate[]>()
-  const types: Exclude<DiscoveredPageType, 'homepage'>[] = ['pricing', 'features', 'changelog']
-
-  $('a[href]').each((_, el) => {
-    const href = $(el).attr('href') ?? ''
-    const anchorText = $(el).text().trim()
-    const url = normalizeHref(href, baseUrl)
-    if (!url || isHomepage(url, baseUrl)) return
-
-    for (const type of types) {
-      const score = scoreLink(url, anchorText, type)
-      if (score > 0) {
-        const list = results.get(type) ?? []
-        if (!list.find(c => c.url === url)) {
-          list.push({ url, page_type: type, score, source_method: 'homepage_link', anchor_text: anchorText })
-        }
-        results.set(type, list)
-      }
-    }
-  })
-
-  return results
+  pricing: {
+    detected_pricing: string | null
+    pricing_confidence: string
+    pricing_model_hint: string | null
+    evidence_text: string | null
+  }
+  positioning: {
+    headline: string | null
+    subheadline: string | null
+    main_value_prop: string | null
+    primary_cta: string | null
+    secondary_cta: string | null
+    confidence: string
+  }
+  features: Array<{ name: string; description: string | null }>
+  changelog: {
+    detected: boolean
+    last_date: string | null
+    confidence: string
+  }
+  pages_analyzed: string[]
+  warnings: string[]
 }
 
-async function discoverFromSitemap(baseUrl: string): Promise<PageCandidate[]> {
-  const candidates: PageCandidate[] = []
-  const types: Exclude<DiscoveredPageType, 'homepage'>[] = ['pricing', 'features', 'changelog']
-
-  for (const sitemapPath of ['/sitemap.xml', '/sitemap_index.xml']) {
-    try {
-      const { html: xml, ok } = await fetchHtml(`${baseUrl}${sitemapPath}`)
-      if (!ok || !xml || !xml.includes('<loc>')) continue
-
-      const locMatches = [...xml.matchAll(/<loc>([^<]+)<\/loc>/gi)]
-      for (const match of locMatches) {
-        const url = match[1]?.trim()
-        if (!url) continue
-        try {
-          const base = new URL(baseUrl)
-          const target = new URL(url)
-          if (target.host !== base.host) continue
-        } catch { continue }
-
-        for (const type of types) {
-          const score = scoreLink(url, '', type)
-          if (score >= 3) {
-            candidates.push({ url, page_type: type, score: score - 1, source_method: 'sitemap' })
-          }
-        }
-      }
-      if (candidates.length > 0) break
-    } catch { continue }
-  }
-
-  return candidates
+export interface IntelligenceSummary {
+  summary: string | null
+  pricing_summary: string | null
+  positioning_summary: string | null
+  cta_summary: string | null
+  feature_summary: string | null
+  confidence_score: number
+  warnings: string[]
 }
 
-async function tryFallbackPaths(
-  baseUrl: string,
-  missingTypes: Exclude<DiscoveredPageType, 'homepage'>[]
-): Promise<PageCandidate[]> {
-  const candidates: PageCandidate[] = []
-  for (const type of missingTypes) {
-    for (const path of FALLBACK_PATHS[type]) {
-      const url = `${baseUrl}${path}`
-      const { ok } = await fetchHtml(url)
-      if (ok) {
-        candidates.push({ url, page_type: type, score: 2, source_method: 'fallback' })
-        break
-      }
-    }
-  }
-  return candidates
+const GENERIC_PHRASES = [
+  'is a saas product', 'software solutions', 'helps businesses',
+  'improve productivity', 'comprehensive platform', 'all-in-one solution',
+]
+
+function isGenericSummary(text: string): boolean {
+  const lower = text.toLowerCase()
+  return GENERIC_PHRASES.some(p => lower.includes(p))
 }
 
-export async function discoverPages(baseUrl: string, homepageHtml: string): Promise<PageCandidate[]> {
-  const result: PageCandidate[] = [
-    { url: baseUrl, page_type: 'homepage', score: 10, source_method: 'homepage' },
-  ]
-
-  const types: Exclude<DiscoveredPageType, 'homepage'>[] = ['pricing', 'features', 'changelog']
-  const homepageCandidates = discoverFromHomepageLinks(homepageHtml, baseUrl)
-  const sitemapCandidates = await discoverFromSitemap(baseUrl)
-
-  const allByType = new Map<Exclude<DiscoveredPageType, 'homepage'>, PageCandidate[]>()
-  for (const type of types) { allByType.set(type, []) }
-
-  for (const [type, candidates] of homepageCandidates) {
-    allByType.set(type, [...(allByType.get(type) ?? []), ...candidates])
+function buildFallbackSummary(data: StructuredIntelligence): IntelligenceSummary {
+  const parts: string[] = []
+  const warnings = [...data.warnings]
+  if (data.positioning.headline) parts.push(`Homepage headline: "${data.positioning.headline}".`)
+  if (data.positioning.main_value_prop) parts.push(data.positioning.main_value_prop)
+  if (data.pricing.detected_pricing && data.pricing.pricing_confidence !== 'low') {
+    parts.push(`Pricing starts at ${data.pricing.detected_pricing}.`)
+  } else if (!data.pricing.detected_pricing) {
+    warnings.push('No reliable pricing found on public pages')
   }
-  for (const candidate of sitemapCandidates) {
-    const type = candidate.page_type as Exclude<DiscoveredPageType, 'homepage'>
-    const list = allByType.get(type) ?? []
-    if (!list.find(c => c.url === candidate.url)) list.push(candidate)
-    allByType.set(type, list)
-  }
+  if (data.changelog.detected) parts.push('Active changelog detected.')
 
-  const missingTypes = types.filter(t => (allByType.get(t)?.length ?? 0) === 0)
-  if (missingTypes.length > 0) {
-    const fallbacks = await tryFallbackPaths(baseUrl, missingTypes)
-    for (const candidate of fallbacks) {
-      const type = candidate.page_type as Exclude<DiscoveredPageType, 'homepage'>
-      allByType.set(type, [candidate])
-    }
+  return {
+    summary: parts.length > 0 ? parts.join(' ') : 'Initial scan completed, but public data was limited for this competitor.',
+    pricing_summary: data.pricing.detected_pricing,
+    positioning_summary: data.positioning.headline ?? data.positioning.main_value_prop,
+    cta_summary: data.positioning.primary_cta,
+    feature_summary: data.features.length >= 3 ? data.features.slice(0, 6).map(f => f.name).join(', ') : null,
+    confidence_score: data.pricing.detected_pricing && data.positioning.headline ? 0.55 : 0.3,
+    warnings,
   }
+}
 
-  for (const type of types) {
-    const candidates = allByType.get(type) ?? []
-    if (candidates.length === 0) continue
-    candidates.sort((a, b) => b.score - a.score)
-    const best = candidates[0]
-    if (best.score >= 2 || best.source_method === 'fallback') {
-      result.push(best)
-    }
-  }
+export async function summarizeStructuredIntelligence(data: StructuredIntelligence): Promise<IntelligenceSummary> {
+  const fallback = buildFallbackSummary(data)
+  if (!process.env.ANTHROPIC_API_KEY) return fallback
 
-  return result
+  const prompt = `You are summarizing verified extracted facts about a competitor website. Do NOT infer beyond the data provided. If data is missing or null, say it is unknown. Never invent pricing, features, target customers, or CTAs.
+
+Verified extracted data:
+${JSON.stringify(data, null, 2)}
+
+Respond ONLY with a JSON object, no markdown, no preamble:
+{
+  "summary": "2-3 specific sentences based ONLY on the data above. If data is weak, say: 'Initial scan completed, but public data was limited for this competitor.' NEVER write generic phrases like 'this is a SaaS product' or 'helps businesses'.",
+  "pricing_summary": "Specific detected pricing with confidence level, or null",
+  "positioning_summary": "Specific headline or value prop found, or null",
+  "cta_summary": "Observed CTA text, or null",
+  "feature_summary": "Comma-separated features if 3+ found, or null",
+  "confidence_score": 0.0,
+  "warnings": []
+}
+
+Rules: values under 150 chars each. confidence_score reflects actual evidence strength.`
+
+  try {
+    const response = await fetch(ANTHROPIC_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 600, messages: [{ role: 'user', content: prompt }] }),
+    })
+    if (!response.ok) return fallback
+    const responseData = await response.json()
+    const text = responseData.content?.[0]?.text ?? ''
+    const parsed = JSON.parse(text.trim()) as IntelligenceSummary
+    if (!parsed.summary || isGenericSummary(parsed.summary)) return fallback
+    return { ...parsed, warnings: parsed.warnings ?? [] }
+  } catch { return fallback }
 }
