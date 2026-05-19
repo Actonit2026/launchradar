@@ -34,7 +34,22 @@ export interface DetectedChange {
   created_at: string
 }
 
-// Enriched types with joins
+export interface CompetitorSnapshot {
+  id: string
+  competitor_id: string
+  user_id: string
+  summary: string | null
+  pricing_model: string | null
+  detected_pricing: string | null
+  positioning: string | null
+  primary_cta: string | null
+  secondary_cta: string | null
+  feature_summary: string | null
+  changelog_detected: boolean
+  confidence_score: number
+  created_at: string
+}
+
 export interface CompetitorWithPages extends Competitor {
   monitored_pages: MonitoredPage[]
 }
@@ -45,12 +60,9 @@ export interface MonitoredPageWithChanges extends MonitoredPage {
 }
 
 export interface DetectedChangeWithContext extends DetectedChange {
-  monitored_page: MonitoredPage & {
-    competitor: Competitor
-  }
+  monitored_page: MonitoredPage & { competitor: Competitor }
 }
 
-// API types
 export interface AddCompetitorPayload {
   name: string
   base_url: string
