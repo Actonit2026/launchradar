@@ -1,7 +1,11 @@
 import { Resend } from 'resend'
 
-const resend = new Resend(process.env.RESEND_API_KEY)
 const FROM_EMAIL = 'LaunchRadar <alerts@launchradar.app>'
+
+function getResend() {
+  if (!process.env.RESEND_API_KEY) throw new Error('RESEND_API_KEY is not set')
+  return new Resend(process.env.RESEND_API_KEY)
+}
 
 interface AlertEmailProps {
   toEmail: string
@@ -53,7 +57,7 @@ export async function sendAlertEmail({ toEmail, competitorName, changes }: Alert
 </body>
 </html>`
 
-  const { data, error } = await resend.emails.send({
+  const { data, error } = await getResend().emails.send.({
     from: FROM_EMAIL,
     to: toEmail,
     subject: `◎ ${competitorName} changed their ${changes[0]?.page_type ?? 'page'}`,
