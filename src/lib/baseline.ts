@@ -43,7 +43,7 @@ export async function runBaselineScan(input: BaselineInput) {
   const allPricingCandidates: PricingCandidate[] = []
   let bestPositioning: ReturnType<typeof import('./extractor').extractPositioning> | null = null
   const allFeatures: Array<{ name: string; description: string | null; source_url: string; evidence_text: string; confidence: number }> = []
-  let changelogResult = { detected: false, changelog_url: null as string | null, last_visible_update_date: null as string | null, confidence: 'unavailable' as const, evidence_text: null as string | null }
+  let changelogResult: import('./extractor').ExtractedChangelog = { detected: false, changelog_url: null, last_visible_update_date: null, confidence: 'unavailable', evidence_text: null }
   const crawledPages: { url: string; page_type: string; status: string; error?: string }[] = []
 
   for (const page of discoveredPages) {
