@@ -166,7 +166,7 @@ export async function runBaselineScan(input: BaselineInput) {
   }
 
   debug.ai_input = aiInput
-
+  const resolvedPositioning = bestPositioning as unknown as ExtractedPositioning | null
   const aiSummary = await summarizeStructuredIntelligence(aiInput)
   debug.ai_output = aiSummary
 
@@ -178,9 +178,9 @@ export async function runBaselineScan(input: BaselineInput) {
       summary: aiSummary.summary,
       pricing_model: pricing_model_hint,
       detected_pricing: aiSummary.pricing_summary ?? detected_pricing,
-      positioning: aiSummary.positioning_summary ?? bestPositioning?.homepage_headline,
-      primary_cta: bestPositioning?.primary_cta,
-      secondary_cta: bestPositioning?.secondary_cta,
+      positioning: aiSummary.positioning_summary ?? resolvedPositioning?.homepage_headline,
+      primary_cta: resolvedPositioning?.primary_cta,
+      secondary_cta: resolvedPositioning?.secondary_cta,
       feature_summary: aiSummary.feature_summary,
       changelog_detected: changelogResult.detected,
       confidence_score: aiSummary.confidence_score,
