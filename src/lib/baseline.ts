@@ -1,7 +1,13 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { fetchHtml } from './scraper'
 import { discoverPages } from './discovery'
-import { extractFromPage, selectBestPricing, type PricingCandidate } from './extractor'
+import {
+  extractFromPage,
+  selectBestPricing,
+  type PricingCandidate,
+  type ExtractedPositioning,
+  type ExtractedChangelog,
+} from './extractor'
 import { summarizeStructuredIntelligence } from './ai'
 import { hashText } from './diff'
 import * as cheerio from 'cheerio'
@@ -19,31 +25,55 @@ export async function runBaselineScan(input: BaselineInput) {
 
   const warnings: string[] = []
   const errors: string[] = []
-  const debug: Record<string, unknown> = { pages_discovered: [], pages_crawled: [], pricing_candidates: [], selected_pricing: null, positioning_data: null, features_raw: [], changelog_data: null, ai_input: null, ai_output: null, warnings, errors }
+  const debug: Record<string, unknown> = {
+    pages_discovered: [],
+    pages_crawled: [],
+    pricing_candidates: [],
+    selected_pricing: null,
+    positioning_data: null,
+    features_raw: [],
+    changelog_data: null,
+    ai_input: null,
+    ai_output: null,
+    warnings,
+    errors,
+  }
 
-  // Fetch homepage
   const { html: homepageHtml, ok: homepageOk, error: homepageError } = await fetchHtml(baseUrl)
   if (!homepageOk || !homepageHtml) {
     throw new Error(`Cannot reach ${baseUrl}: ${homepageError ?? 'Unknown error'}`)
   }
 
-  // Discover pages
   const discoveredPages = await discoverPages(baseUrl, homepageHtml)
   debug.pages_discovered = discoveredPages
 
-  // Save discovered pages to monitored_pages
   const { data: savedPages, error: pagesError } = await supabase
     .from('monitored_pages')
-    .insert(discoveredPages.map(p => ({ competitor_id: competitorId, url: p.url, page_type: p.page_type })))
+    .insert(discoveredPages.map(p => ({
+      competitor_id: competitorId,
+      url: p.url,
+      page_type: p.page_type,
+    })))
     .select()
 
   if (pagesError) throw pagesError
 
-  // Scrape and extract
   const allPricingCandidates: PricingCandidate[] = []
-  let bestPositioning: ReturnType<typeof import('./extractor').extractPositioning> | null = null
-  const allFeatures: Array<{ name: string; description: string | null; source_url: string; evidence_text: string; confidence: number }> = []
-  let changelogResult: import('./extractor').ExtractedChangelog = { detected: false, changelog_url: null, last_visible_update_date: null, confidence: 'unavailable', evidence_text: null }
+  let bestPositioning: ExtractedPositioning | null = null
+  const allFeatures: Array<{
+    name: string
+    description: string | null
+    source_url: string
+    evidence_text: string
+    confidence: number
+  }> = []
+  let changelogResult: ExtractedChangelog = {
+    detected: false,
+    changelog_url: null,
+    last_visible_update_date: null,
+    confidence: 'unavailable',
+    evidence_text: null,
+  }
   const crawledPages: { url: string; page_type: string; status: string; error?: string }[] = []
 
   for (const page of discoveredPages) {
@@ -61,7 +91,6 @@ export async function runBaselineScan(input: BaselineInput) {
 
     crawledPages.push({ url: page.url, page_type: page.page_type, status: 'success' })
 
-    // Save baseline snapshot — no detected_changes created
     const savedPage = savedPages?.find((p: { url: string }) => p.url === page.url)
     if (savedPage) {
       const $ = cheerio.load(html)
@@ -93,11 +122,10 @@ export async function runBaselineScan(input: BaselineInput) {
 
   debug.pages_crawled = crawledPages
 
-  // Select best pricing
-  const { detected_pricing, pricing_confidence, pricing_model_hint, evidence: pricingEvidence } = selectBestPricing(allPricingCandidates)
+  const { detected_pricing, pricing_confidence, pricing_model_hint, evidence: pricingEvidence } =
+    selectBestPricing(allPricingCandidates)
   debug.selected_pricing = { detected_pricing, pricing_confidence, evidence: pricingEvidence }
 
-  // Deduplicate features
   const seenNames = new Set<string>()
   const uniqueFeatures = allFeatures.filter(f => {
     if (seenNames.has(f.name.toLowerCase())) return false
@@ -110,11 +138,15 @@ export async function runBaselineScan(input: BaselineInput) {
   if (uniqueFeatures.length < 3) warnings.push(`Only ${uniqueFeatures.length} features detected with confidence`)
   if (discoveredPages.length < 2) warnings.push('Could only discover homepage — limited intelligence available')
 
-  // Build AI input from structured facts only
   const aiInput = {
     competitorName,
     baseUrl,
-    pricing: { detected_pricing, pricing_confidence, pricing_model_hint, evidence_text: pricingEvidence?.raw_text ?? null },
+    pricing: {
+      detected_pricing,
+      pricing_confidence,
+      pricing_model_hint,
+      evidence_text: pricingEvidence?.raw_text ?? null,
+    },
     positioning: {
       headline: bestPositioning?.homepage_headline ?? null,
       subheadline: bestPositioning?.subheadline ?? null,
@@ -124,7 +156,11 @@ export async function runBaselineScan(input: BaselineInput) {
       confidence: bestPositioning?.confidence ?? 'unavailable',
     },
     features: uniqueFeatures.slice(0, 8).map(f => ({ name: f.name, description: f.description })),
-    changelog: { detected: changelogResult.detected, last_date: changelogResult.last_visible_update_date, confidence: changelogResult.confidence },
+    changelog: {
+      detected: changelogResult.detected,
+      last_date: changelogResult.last_visible_update_date,
+      confidence: changelogResult.confidence,
+    },
     pages_analyzed: discoveredPages.map(p => p.url),
     warnings,
   }
