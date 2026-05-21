@@ -169,6 +169,8 @@ export async function runBaselineScan(input: BaselineInput) {
   const resolvedPositioning = bestPositioning as unknown as ExtractedPositioning | null
   const aiSummary = await summarizeStructuredIntelligence(aiInput)
   debug.ai_output = aiSummary
+    const resolvedPositioning = bestPositioning as unknown as ExtractedPositioning | null
+
 
   const { data: snapshot, error: snapshotError } = await supabase
     .from('competitor_snapshots')
