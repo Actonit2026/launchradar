@@ -1,6 +1,12 @@
-import { createServerClient, type CookieOptions } from '@supabase/ssr'
+import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 import { NextRequest, NextResponse } from 'next/server'
+
+type CookieToSet = {
+  name: string
+  value: string
+  options?: Parameters<Awaited<ReturnType<typeof cookies>>['set']>[2]
+}
 
 export async function GET(request: NextRequest) {
   const requestUrl = new URL(request.url)
@@ -18,21 +24,10 @@ export async function GET(request: NextRequest) {
           getAll() {
             return cookieStore.getAll()
           },
-
-          setAll(
-            cookiesToSet: {
-              name: string
-              value: string
-              options?: CookieOptions
-            }[]
-          ) {
-            try {
-              cookiesToSet.forEach(({ name, value, options }) => {
-                cookieStore.set(name, value, options)
-              })
-            } catch {
-              // Called from Server Component — safe to ignore
-            }
+          setAll(cookiesToSet: CookieToSet[]) {
+            cookiesToSet.forEach(({ name, value, options }) => {
+              cookieStore.set(name, value, options)
+            })
           },
         },
       }
