@@ -6,12 +6,15 @@
   "crons": [
     {
       "path": "/api/scan",
-      "schedule": "0 8 * * *"
+      "schedule": "0 */12 * * *"
     }
   ],
   "functions": {
     "src/app/api/scan/route.ts": {
       "maxDuration": 60
+    },
+    "src/app/api/baseline/route.ts": {
+      "maxDuration": 300
     }
   }
 }
