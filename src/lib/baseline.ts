@@ -138,6 +138,9 @@ export async function runBaselineScan(input: BaselineInput) {
   if (uniqueFeatures.length < 3) warnings.push(`Only ${uniqueFeatures.length} features detected with confidence`)
   if (discoveredPages.length < 2) warnings.push('Could only discover homepage — limited intelligence available')
 
+  // Snapshot positioning before the await — prevents TypeScript narrowing bestPositioning to never
+  const positioningSnapshot: ExtractedPositioning | null = bestPositioning
+
   const aiInput = {
     competitorName,
     baseUrl,
@@ -148,12 +151,12 @@ export async function runBaselineScan(input: BaselineInput) {
       evidence_text: pricingEvidence?.raw_text ?? null,
     },
     positioning: {
-      headline: bestPositioning?.homepage_headline ?? null,
-      subheadline: bestPositioning?.subheadline ?? null,
-      main_value_prop: bestPositioning?.main_value_prop ?? null,
-      primary_cta: bestPositioning?.primary_cta ?? null,
-      secondary_cta: bestPositioning?.secondary_cta ?? null,
-      confidence: bestPositioning?.confidence ?? 'unavailable',
+      headline: positioningSnapshot?.homepage_headline ?? null,
+      subheadline: positioningSnapshot?.subheadline ?? null,
+      main_value_prop: positioningSnapshot?.main_value_prop ?? null,
+      primary_cta: positioningSnapshot?.primary_cta ?? null,
+      secondary_cta: positioningSnapshot?.secondary_cta ?? null,
+      confidence: positioningSnapshot?.confidence ?? 'unavailable',
     },
     features: uniqueFeatures.slice(0, 8).map(f => ({ name: f.name, description: f.description })),
     changelog: {
@@ -166,9 +169,8 @@ export async function runBaselineScan(input: BaselineInput) {
   }
 
   debug.ai_input = aiInput
-const resolvedPositioning = bestPositioning as unknown as ExtractedPositioning | null
-const aiSummary = await summarizeStructuredIntelligence(aiInput)
-debug.ai_output = aiSummary
+  const aiSummary = await summarizeStructuredIntelligence(aiInput)
+  debug.ai_output = aiSummary
 
   const { data: snapshot, error: snapshotError } = await supabase
     .from('competitor_snapshots')
@@ -178,9 +180,9 @@ debug.ai_output = aiSummary
       summary: aiSummary.summary,
       pricing_model: pricing_model_hint,
       detected_pricing: aiSummary.pricing_summary ?? detected_pricing,
-      positioning: aiSummary.positioning_summary ?? resolvedPositioning?.homepage_headline,
-      primary_cta: resolvedPositioning?.primary_cta,
-      secondary_cta: resolvedPositioning?.secondary_cta,
+      positioning: aiSummary.positioning_summary ?? positioningSnapshot?.homepage_headline,
+      primary_cta: positioningSnapshot?.primary_cta,
+      secondary_cta: positioningSnapshot?.secondary_cta,
       feature_summary: aiSummary.feature_summary,
       changelog_detected: changelogResult.detected,
       confidence_score: aiSummary.confidence_score,
